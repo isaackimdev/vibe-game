@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚔️ Chronicles of Eternity - 영원의 연대기</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <!-- ========== 타이틀 화면 ========== -->
+    <div id="screen-title" class="screen active">
+        <canvas id="title-canvas"></canvas>
+        <div class="title-content">
+            <div class="title-logo">
+                <div class="logo-icon">⚔️</div>
+                <h1 class="game-title">Chronicles of Eternity</h1>
+                <p class="game-subtitle">영원의 연대기</p>
+            </div>
+            <div class="title-buttons">
+                <button class="btn-main" id="btn-new-game">
+                    <span class="btn-icon">▶</span> 새 게임
+                </button>
+                <button class="btn-main btn-secondary" disabled>
+                    <span class="btn-icon">↺</span> 이어하기
+                </button>
+            </div>
+            <div class="title-version">v0.1.0 ALPHA · Stage 1</div>
+        </div>
+        <div class="title-particles" id="title-particles"></div>
+    </div>
+
+    <!-- ========== 캐릭터 선택 화면 ========== -->
+    <div id="screen-character-select" class="screen">
+        <div class="cs-bg"></div>
+        <div class="cs-header">
+            <button class="btn-back" id="btn-cs-back">← 뒤로</button>
+            <h2 class="cs-title">⚔️ 캐릭터 선택</h2>
+            <div class="gender-filter">
+                <button class="filter-btn active" data-filter="all">전체</button>
+                <button class="filter-btn" data-filter="male">♂ 남성</button>
+                <button class="filter-btn" data-filter="female">♀ 여성</button>
+            </div>
+        </div>
+        <div class="cs-content">
+            <div class="cs-left">
+                <div class="character-grid" id="character-grid"></div>
+            </div>
+            <div class="cs-right" id="character-detail">
+                <div class="detail-placeholder">
+                    <div class="placeholder-icon">⚔️</div>
+                    <p>캐릭터를 선택하세요</p>
+                </div>
+            </div>
+        </div>
+        <div class="cs-footer">
+            <div class="selected-info" id="selected-info">선택된 캐릭터 없음</div>
+            <button class="btn-confirm" id="btn-start-game" disabled>모험 시작! →</button>
+        </div>
+    </div>
+
+    <!-- ========== 게임 화면 ========== -->
+    <div id="screen-game" class="screen">
+        <canvas id="game-canvas"></canvas>
+        <div id="game-hud">
+            <div class="hud-player">
+                <div class="hud-avatar" id="hud-avatar">⚔️</div>
+                <div class="hud-info">
+                    <div class="hud-name" id="hud-name">캐릭터명</div>
+                    <div class="hud-bars">
+                        <div class="bar-container">
+                            <span class="bar-label">HP</span>
+                            <div class="bar-bg"><div class="bar-fill hp-bar" id="hp-bar" style="width:100%"></div></div>
+                            <span class="bar-value" id="hp-value">100/100</span>
+                        </div>
+                        <div class="bar-container">
+                            <span class="bar-label">MP</span>
+                            <div class="bar-bg"><div class="bar-fill mp-bar" id="mp-bar" style="width:100%"></div></div>
+                            <span class="bar-value" id="mp-value">100/100</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="hud-skills">
+                <div class="skill-slot" data-skill-index="0"><div class="skill-key">Z</div><div class="skill-icon" id="skill-icon-0">⚔️</div><div class="skill-cooldown" id="skill-cd-0"></div></div>
+                <div class="skill-slot" data-skill-index="1"><div class="skill-key">X</div><div class="skill-icon" id="skill-icon-1">💥</div><div class="skill-cooldown" id="skill-cd-1"></div></div>
+                <div class="skill-slot" data-skill-index="2"><div class="skill-key">C</div><div class="skill-icon" id="skill-icon-2">✨</div><div class="skill-cooldown" id="skill-cd-2"></div></div>
+                <div class="skill-slot" data-skill-index="3"><div class="skill-key">V</div><div class="skill-icon" id="skill-icon-3">🌟</div><div class="skill-cooldown" id="skill-cd-3"></div></div>
+            </div>
+            <div class="skill-tooltip" id="skill-tooltip"></div>
+            <div class="hud-level">
+                <div class="level-badge" id="level-badge">Lv.1</div>
+                <div class="exp-bar-container"><div class="exp-bar" id="exp-bar" style="width:0%"></div></div>
+            </div>
+            <div class="hud-stage" id="hud-stage">Stage 1  0/20</div>
+            <div class="hud-minimap-frame">
+                <div class="hud-minimap-title">MAP</div>
+                <canvas id="minimap-canvas" class="hud-minimap" width="180" height="180"></canvas>
+            </div>
+            <div class="hud-controls">
+                <span>이동: WASD / 방향키</span>
+                <span>기본공격: Z</span>
+                <span>스킬: X C V</span>
+                <span>인벤토리: I (준비중)</span>
+            </div>
+            <button class="btn-menu" id="btn-game-menu">☰ 메뉴</button>
+        </div>
+        <div id="damage-container"></div>
+    </div>
+
+    <script src="js/characters.js"></script>
+    <script src="js/screens/characterSelect.js"></script>
+    <script src="js/game/gameEngine.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
