@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "rpg-game",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "-p", "3777", "."],
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "node_modules\\.bin\\serve.cmd", "-p", "3777", "."],
       "port": 3777
     }
   ]
