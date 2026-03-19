@@ -1,35 +1,63 @@
 /**
- * Chronicles of Eternity - Game Engine v2 (Stage 2)
- * - 캐릭터 몸체 + 무기 분리 렌더링
- * - 스킬 이펙트 시스템 (slash / magic_ring / explosion / beam / shockwave)
- * - 몬스터 8종 AI 패턴
+ * Chronicles of Eternity — Game Engine v2
+ *
+ * 역할:
+ *  - 게임 메인 루프 (requestAnimationFrame, 60fps 목표)
+ *  - 절차적 던전 맵 생성 (38×30 타일)
+ *  - 플레이어 이동·스킬·레벨업·상태이상 처리
+ *  - 몬스터 AI 8종 + 보스 패턴
+ *  - 투사체·파티클·이펙트 시스템
+ *  - 카메라 Lerp 추적
+ *  - HUD DOM 업데이트 및 미니맵 Canvas 렌더링
+ *
+ * 렌더링 레이어 순서:
+ *  맵 타일 → 바닥 이펙트 → 파티클 → 몬스터
+ *  → 투사체 → 플레이어 → 전면 이펙트 → 미니맵
+ *
+ * 캐릭터 렌더링:
+ *  - bodyEmoji(몸체) + weaponEmoji(무기) 분리 렌더링
+ *  - renderCharacterBody()로 벡터 기반 몸체 직접 그리기
+ *
+ * 외부 의존성:
+ *  - getCharById()   (characters.js)
+ *  - GameManager     (main.js)
  */
 const GameEngine = (() => {
 
     /* ═══════════════════════════════════════════════════════
        변수 선언
     ═══════════════════════════════════════════════════════ */
-    let canvas, ctx, W, H, animId = null, lastTime = 0;
-    let minimapCanvas = null, minimapCtx = null;
+    let canvas, ctx, W, H;          // 메인 Canvas 및 뷰포트 크기
+    let animId = null, lastTime = 0;// rAF ID, 이전 프레임 타임스탬프
+    let minimapCanvas = null, minimapCtx = null; // 미니맵 별도 Canvas
+    /** @type {'idle'|'playing'|'stage-clear'|'gameover'} */
     let gameState = 'idle';
+    /** @type {object|null} 플레이어 런타임 객체 */
     let player = null;
     let monsters = [], projectiles = [], particles = [], effects = [];
-    let camera = { x:0, y:0 };
-    let stage = null;
-    let uiBound = false;
-    const keys = {};
+    let camera = { x:0, y:0 };     // 카메라 월드 좌표 (Lerp 적용)
+    let stage = null;               // 현재 스테이지 상태 객체
+    let uiBound = false;            // HUD 이벤트 중복 바인딩 방지 플래그
+    const keys = {};                // 현재 눌린 키 상태 맵
+    /** 각 스킬 키의 남은 쿨타임(초) */
     const skillCooldowns = { Z:0, X:0, C:0, V:0 };
+    /** 각 스킬 키의 최대 쿨타임(초) */
     const skillMaxCDs    = { Z:0.28, X:1.5, C:3.0, V:8.0 };
 
-    const TILE = 64, MAP_W = 38, MAP_H = 30;
-    let mapTiles = [];      // 0=floor, 1=wall
-    let mapDecals = [];     // 장식 타일 정보
+    const TILE = 64;    // 타일 픽셀 크기
+    const MAP_W = 38;   // 맵 가로 타일 수
+    const MAP_H = 30;   // 맵 세로 타일 수
+    let mapTiles = [];  // 2D 배열: 0=바닥, 1=벽
+    let mapDecals = []; // 2D 배열: 바닥 장식 이모지 (🕯️💎🪨) 또는 null
 
     /* ═══════════════════════════════════════════════════════
        몬스터 타입 정의 (8종)
+       각 타입은 behavior 필드로 AI 패턴을 결정한다.
+       spawnOne()에서 이 배열에서 무작위로 선택해 몬스터를 생성한다.
     ═══════════════════════════════════════════════════════ */
     const MON_TYPES = [
         {
+            // 슬라임: 처치 시 소형 슬라임 2마리로 분열 (split behavior)
             name:'슬라임', emoji:'🟢', color:'#2ecc71',
             hp:100, atk:8,  def:2,  spd:48,  r:14, exp:8,
             behavior:'split',  splitCount:2, splitHp:45
@@ -74,6 +102,11 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        초기화
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 게임 엔진을 초기화하고 게임 루프를 시작한다.
+     * GameManager.startGame(charId)에서 호출된다.
+     * @param {string} charId - 선택된 캐릭터 ID
+     */
     function init(charId) {
         canvas = document.getElementById('game-canvas');
         ctx    = canvas.getContext('2d');
@@ -95,6 +128,10 @@ const GameEngine = (() => {
         loop(lastTime);
     }
 
+    /**
+     * Canvas 크기를 DOM 실제 크기에 맞게 재설정한다.
+     * window resize 이벤트와 init() 시 호출된다.
+     */
     function resize() {
         W = canvas.width  = canvas.clientWidth;
         H = canvas.height = canvas.clientHeight;
@@ -108,6 +145,13 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        맵 생성
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 38×30 타일 맵을 절차적으로 생성한다.
+     * - 외곽 타일은 무조건 벽(1)
+     * - 내부 타일은 7% 확률로 벽, 나머지 바닥(0)
+     * - 시작 지점(3,3) 주변 7×7 구역은 강제로 바닥으로 클리어
+     * - 4% 확률로 바닥 타일에 장식 데칼 배치
+     */
     function generateMap() {
         mapTiles  = [];
         mapDecals = [];
@@ -128,11 +172,25 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 타일 좌표(tx, ty)가 벽 또는 맵 외부인지 확인한다.
+     * @param {number} tx - 타일 X 좌표
+     * @param {number} ty - 타일 Y 좌표
+     * @returns {boolean}
+     */
     function isSolid(tx,ty) {
         if (tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return true;
         return mapTiles[ty]?.[tx]===1;
     }
 
+    /**
+     * 월드 좌표(x, y)에서 반지름 r인 원이 벽과 충돌하는지 확인한다.
+     * 4개의 코너 포인트를 타일 좌표로 변환해 각각 isSolid() 검사한다.
+     * @param {number} x - 중심 월드 X
+     * @param {number} y - 중심 월드 Y
+     * @param {number} r - 반지름 (픽셀)
+     * @returns {boolean}
+     */
     function wouldCollide(x,y,r) {
         return [[-1,-1],[1,-1],[-1,1],[1,1]].some(([sx,sy])=>
             isSolid(Math.floor((x+sx*r)/TILE), Math.floor((y+sy*r)/TILE))
@@ -142,6 +200,11 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        플레이어
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 선택된 캐릭터 데이터를 기반으로 플레이어 런타임 객체를 생성한다.
+     * baseStats에서 실제 게임 수치를 가져오고, 이동속도는 spd × 1.14 적용.
+     * @param {string} charId - 캐릭터 ID
+     */
     function spawnPlayer(charId) {
         const cd = getCharById(charId);
         const bs = cd.baseStats;
@@ -166,6 +229,14 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        몬스터
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 스테이지를 초기화한다.
+     * - stage 상태 객체 생성
+     * - 맵 재생성
+     * - 플레이어 위치 리셋 및 초기 무적 부여
+     * - 초기 몬스터 스폰: 14 + (number × 2)마리
+     * @param {number} number - 스테이지 번호 (1부터 시작)
+     */
     function initStage(number) {
         stage = {
             number,
@@ -224,6 +295,11 @@ const GameEngine = (() => {
         };
     }
 
+    /**
+     * 단일 몬스터를 랜덤 위치에 생성한다.
+     * 플레이어로부터 280px 이상 떨어진 위치를 최대 80회 시도한다.
+     * @param {object} [typeOverride] - 특정 몬스터 타입 강제 지정 (기본: 랜덤)
+     */
     function spawnOne(typeOverride) {
         if (!player || !stage || stage.completed) return;
         const t = typeOverride || MON_TYPES[Math.floor(Math.random()*MON_TYPES.length)];
@@ -263,6 +339,12 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        메인 루프
     ═══════════════════════════════════════════════════════ */
+    /**
+     * requestAnimationFrame 기반 메인 게임 루프.
+     * dt(델타 타임)를 0.05초로 클램프해 탭 비활성화 시 급격한 점프 방지.
+     * playing 상태일 때만 update()를 호출한다.
+     * @param {DOMHighResTimeStamp} ts - rAF 타임스탬프
+     */
     function loop(ts) {
         const dt = Math.min((ts-lastTime)/1000, 0.05);
         lastTime = ts;
@@ -290,6 +372,14 @@ const GameEngine = (() => {
     }
 
     /* ── 플레이어 업데이트 ── */
+    /**
+     * 매 프레임 플레이어 상태를 업데이트한다.
+     * - 무적/히트플래시/상태 타이머 감소
+     * - 버프·독 상태이상 처리
+     * - MP 자동 재생 (1.5초마다 최대 MP의 1.5%)
+     * - WASD/화살표 키 입력 → 이동 벡터 계산 → 충돌 감지 후 이동
+     * @param {number} dt - 델타 타임(초)
+     */
     function updatePlayer(dt) {
         if (!player||player.state==='dead') return;
         if (player.invincible>0) player.invincible-=dt;
@@ -341,6 +431,13 @@ const GameEngine = (() => {
     }
 
     /* ── 몬스터 업데이트 ── */
+    /**
+     * 모든 몬스터의 AI를 실행하고 사망한 몬스터를 처리한다.
+     * - 어그로 범위 진입/이탈 판정
+     * - HP 재생 (트롤)
+     * - HP ≤ 0 → onMonsterDie() 후 배열에서 제거
+     * @param {number} dt - 델타 타임(초)
+     */
     function updateMonsters(dt) {
         monsters.forEach(m=>{
             if (m.hp<=0||!player||player.state==='dead') return;
@@ -366,6 +463,14 @@ const GameEngine = (() => {
         });
     }
 
+    /**
+     * 몬스터의 behavior 타입에 따라 AI 서브루틴을 호출한다.
+     * @param {object} m  - 몬스터 객체
+     * @param {number} dx - 플레이어까지 X 방향 거리
+     * @param {number} dy - 플레이어까지 Y 방향 거리
+     * @param {number} d  - 플레이어까지 거리 (scalar)
+     * @param {number} dt - 델타 타임
+     */
     function runAI(m, dx, dy, d, dt) {
         switch(m.behavior) {
             case 'split':
@@ -406,6 +511,16 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 보스 AI: HP 비율에 따라 두 단계 패턴을 사용한다.
+     * - HP ≥ 45%: 접근 → 돌진(charge) 또는 원거리 공격 교체
+     * - HP < 45%: 5방향 산탄 마법 + 빠른 추격
+     * @param {object} m  - 보스 몬스터 객체
+     * @param {number} dx - 플레이어까지 X 오프셋
+     * @param {number} dy - 플레이어까지 Y 오프셋
+     * @param {number} d  - 플레이어까지 거리
+     * @param {number} dt - 델타 타임
+     */
     function runBossAI(m, dx, dy, d, dt) {
         if (m.hp / m.maxHp < 0.45) {
             if (d > m.attackRange * 1.2) moveToward(m, dx, dy, d, m.spd * 1.15, dt);
@@ -436,6 +551,16 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 엔티티를 (dx, dy) 방향으로 spd 속도로 이동시킨다.
+     * X축·Y축을 각각 충돌 검사해 축 분리 이동을 구현한다.
+     * @param {object} m   - 이동할 몬스터 객체
+     * @param {number} dx  - X 방향 성분
+     * @param {number} dy  - Y 방향 성분
+     * @param {number} d   - 방향 벡터 크기 (정규화용)
+     * @param {number} spd - 이동 속도 (px/s)
+     * @param {number} dt  - 델타 타임
+     */
     function moveToward(m, dx, dy, d, spd, dt) {
         if (d===0) return;
         const nx=m.x+(dx/d)*spd*dt, ny=m.y+(dy/d)*spd*dt;
@@ -443,6 +568,16 @@ const GameEngine = (() => {
         if (!wouldCollide(m.x,ny,m.r)) m.y=ny;
     }
 
+    /**
+     * 몬스터 근접 공격을 시도한다.
+     * 플레이어가 무적 상태거나 몬스터 attackCd > 0이면 공격하지 않는다.
+     * 좀비 공격 시 독 상태이상을 부여한다.
+     * @param {object} m  - 공격하는 몬스터
+     * @param {number} dx - 플레이어 방향 X
+     * @param {number} dy - 플레이어 방향 Y
+     * @param {number} d  - 플레이어까지 거리
+     * @param {number} dt - 델타 타임 (미사용, 시그니처 통일용)
+     */
     function tryMeleeAttack(m, dx, dy, d, dt) {
         if (m.attackCd>0||player.invincible>0) return;
         const dmg=Math.max(1, m.atk * (m.isBoss ? 1.28 : 1) - player.def*0.3);
@@ -566,6 +701,15 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 몬스터 사망 처리.
+     * - 처치 수·EXP 증가
+     * - 사망 이펙트·파티클 재생
+     * - 보스 처치 시 스테이지 완료 예약
+     * - 슬라임 분열: 소형 슬라임 2마리 소환
+     * - EXP가 expMax 이상이면 레벨업 처리
+     * @param {object} m - 사망한 몬스터
+     */
     function onMonsterDie(m) {
         if (!player) return;
         if (stage) stage.kills++;
@@ -619,6 +763,11 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 레벨업 시 스탯을 증가시키고 시각 효과를 재생한다.
+     * HP +10%, MP +8%, ATK/MATK +8%, DEF +6%.
+     * 레벨업 후 HP/MP는 최대치로 회복된다.
+     */
     function onLevelUp() {
         player.maxHp =Math.floor(player.maxHp*1.10); player.hp=player.maxHp;
         player.maxMp =Math.floor(player.maxMp*1.08); player.mp=player.maxMp;
@@ -701,6 +850,12 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        스킬 시스템
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 키 인덱스에 해당하는 스킬을 발동한다.
+     * 쿨타임이 남아 있으면 무시. 쿨타임 차감 후 스킬 함수 호출.
+     * isMagic: type이 magic/dark/support/tech인 캐릭터는 마법 스킬 사용.
+     * @param {number} idx - 0=Z, 1=X, 2=C, 3=V
+     */
     function useSkill(idx) {
         const k=['Z','X','C','V'][idx];
         if (skillCooldowns[k]>0) return;
@@ -842,11 +997,21 @@ const GameEngine = (() => {
     }
 
     /* ── 유틸 ── */
+    /**
+     * MP를 소비한다. 부족하면 'MP 부족!' 메시지를 표시하고 false 반환.
+     * @param {number} cost - 소비할 MP 양
+     * @returns {boolean} 소비 성공 여부
+     */
     function useMp(cost) {
         if (player.mp<cost) { showDamage(player.x,player.y-40,'MP 부족!','miss'); return false; }
         player.mp-=cost; return true;
     }
 
+    /**
+     * 가장 가까운 몬스터 방향 각도를 반환한다.
+     * 460px 이내에 몬스터가 없으면 플레이어 facing 방향을 반환한다.
+     * @returns {number} 라디안 각도
+     */
     function getBestAngle() {
         let best=null,bd=Infinity;
         monsters.forEach(m=>{ const d=dist(player.x,player.y,m.x,m.y); if(d<bd){bd=d;best=m;} });
@@ -876,6 +1041,14 @@ const GameEngine = (() => {
             player.x+Math.cos(angle)*55, player.y+Math.sin(angle)*55,'#fff',7);
     }
 
+    /**
+     * 몬스터에게 실제 피해를 적용한다.
+     * 피해 = max(1, rawAtk - def × 0.3). 크리티컬 시 × 2.3.
+     * 피격 후 넉백 적용 및 파티클 생성.
+     * @param {object}  m       - 피격 몬스터
+     * @param {number}  rawAtk  - 공격력 (스킬 배율 포함)
+     * @param {boolean} isMagic - 마법 피해 여부 (데미지 텍스트 색상용)
+     */
     function dealDamage(m, rawAtk, isMagic) {
         let dmg=Math.max(1, rawAtk - m.def*0.3);
         const crit=Math.random()<player.crit;
@@ -891,6 +1064,13 @@ const GameEngine = (() => {
         }
     }
 
+    /**
+     * 엔티티를 angle 방향으로 force 픽셀만큼 밀어낸다 (넉백).
+     * 충돌 검사를 통과한 방향으로만 이동한다.
+     * @param {object} ent   - 밀어낼 엔티티 (player 또는 monster)
+     * @param {number} angle - 밀어낼 방향 (라디안)
+     * @param {number} force - 밀어낼 거리 (픽셀)
+     */
     function pushEntity(ent, angle, force) {
         const nx=ent.x+Math.cos(angle)*force;
         const ny=ent.y+Math.sin(angle)*force;
@@ -963,6 +1143,10 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        카메라
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 카메라를 플레이어 중심으로 Lerp 보간해 부드럽게 추적한다.
+     * 보간 계수 0.13: 낮을수록 부드럽고 지연이 생긴다.
+     */
     function updateCamera() {
         camera.x+=(player.x-W/2-camera.x)*0.13;
         camera.y+=(player.y-H/2-camera.y)*0.13;
@@ -1400,6 +1584,19 @@ const GameEngine = (() => {
         renderHpBar(p.x, p.y-p.r-15, p.hp, p.maxHp, 52, 5, '#e74c3c');
     }
 
+    /**
+     * Canvas 2D API로 캐릭터 몸체를 직접 그린다 (이모지 없이 벡터 렌더링).
+     * 포함 요소: 망토, 머리, 몸통, 팔·다리, 흉갑, 눈, 입, 머리 장식.
+     * motion 파라미터로 달리기 바운스, 공격 리프트 등 애니메이션 적용.
+     * @param {CharacterData} char  - 캐릭터 데이터 (color, gender, type 사용)
+     * @param {number}        size  - 캐릭터 반지름 기준 크기
+     * @param {object}        motion
+     * @param {number}        motion.runCycle   - 달리기 사이클 값 (sin)
+     * @param {number}        motion.bounce     - 수직 바운스 오프셋
+     * @param {number}        motion.torsoTilt  - 몸통 기울기
+     * @param {number}        motion.attackLift - 공격 시 팔 들어올리기
+     * @param {number}        motion.time       - performance.now() / 1000
+     */
     function renderCharacterBody(char, size, motion = {}) {
         const primary = char.color;
         const accent = char.gender === 'female' ? '#f6c3d0' : '#c9d8ff';
@@ -1528,6 +1725,17 @@ const GameEngine = (() => {
         });
     }
 
+    /**
+     * 엔티티 위에 HP 바를 렌더링한다.
+     * HP 30% 미만이면 색상을 빨간색으로 변환해 위험 상태를 시각적으로 알린다.
+     * @param {number} x     - 바 중앙 X (월드 좌표)
+     * @param {number} y     - 바 상단 Y (월드 좌표)
+     * @param {number} hp    - 현재 HP
+     * @param {number} max   - 최대 HP
+     * @param {number} w     - 바 너비 (픽셀)
+     * @param {number} h     - 바 높이 (픽셀)
+     * @param {string} color - 정상 상태 색상 (hex)
+     */
     function renderHpBar(x,y,hp,max,w,h,color) {
         const pct=Math.max(0,hp/max);
         ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(x-w/2,y,w,h);
@@ -1659,6 +1867,12 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        화면 흔들기 / 게임오버
     ═══════════════════════════════════════════════════════ */
+    /**
+     * 게임 화면(#screen-game)을 랜덤 translate로 흔들어 충격 효과를 준다.
+     * 16ms 간격 setInterval로 구현. 시간이 지날수록 decay(감쇠) 적용.
+     * @param {number} strength - 최대 흔들림 픽셀 크기 (기본 8)
+     * @param {number} duration - 흔들림 지속 시간(초) (기본 0.4)
+     */
     function shakeCanvas(strength=8, duration=0.4) {
         const el=document.getElementById('screen-game');
         if (!el) return;
@@ -1703,13 +1917,30 @@ const GameEngine = (() => {
     /* ═══════════════════════════════════════════════════════
        유틸
     ═══════════════════════════════════════════════════════ */
+    /** 두 점 사이의 유클리드 거리를 반환한다. */
     function dist(x1,y1,x2,y2) { return Math.sqrt((x2-x1)**2+(y2-y1)**2); }
+
+    /** 각도를 -π ~ π 범위로 정규화한다 (각도 차이 판정 등에 사용). */
     function normAngle(a) { while(a>Math.PI)a-=Math.PI*2; while(a<-Math.PI)a+=Math.PI*2; return a; }
+
+    /**
+     * hex 색상에 알파를 적용한 rgba 문자열을 반환한다.
+     * @param {string} hex - '#rrggbb' 형식
+     * @param {number} a   - 알파 (0.0~1.0)
+     * @returns {string} 'rgba(r,g,b,a)'
+     */
     function hexAlpha(hex,a) {
         const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
         return `rgba(${r},${g},${b},${a})`;
     }
 
+    /**
+     * 게임 엔진을 완전히 정지하고 모든 상태를 초기화한다.
+     * GameManager.showTitle() 호출 시 실행된다.
+     * - rAF 취소, 이벤트 리스너 제거
+     * - 모든 게임 객체 배열 초기화
+     * - 오버레이 DOM 제거, 화면 transform 초기화
+     */
     function stop() {
         if (animId) { cancelAnimationFrame(animId); animId=null; }
         window.removeEventListener('resize', resize);
